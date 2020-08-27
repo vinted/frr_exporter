@@ -95,7 +95,7 @@ func (e *Exporters) Collect(ch chan<- prometheus.Metric) {
 	wg := &sync.WaitGroup{}
 	for _, collector := range e.Collectors {
 		wg.Add(1)
-		go runCollector(ch, errCh, collector, wg)
+		runCollector(ch, errCh, collector, wg)
 	}
 	wg.Wait()
 

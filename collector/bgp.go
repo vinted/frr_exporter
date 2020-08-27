@@ -1,10 +1,10 @@
 package collector
 
 import (
-	"context"
+	"bufio"
 	"encoding/json"
 	"fmt"
-	"os/exec"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -160,7 +160,7 @@ func (*BGPL2VPNCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func getBgpL2vpnEvpnSummary() ([]byte, error) {
-	return execVtyshCommand("-c", "show evpn vni json")
+	return execCommand("show evpn vni json", "zebra")
 }
 
 type vxLanStats struct {
@@ -173,15 +173,31 @@ type vxLanStats struct {
 	TenantVrf      string
 }
 
-func execVtyshCommand(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), vtyshTimeout)
-	defer cancel()
+func execCommand(args ...string) ([]byte, error) {
+	socketPath := "/var/run/frr/bgpd.vty"
+	if len(args) == 2 {
+		socketPath = "/var/run/frr/zebra.vty"
+	}
 
-	output, err := exec.CommandContext(ctx, vtyshPath, args...).Output()
+	socket, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return nil, err
 	}
-	return output, nil
+	defer socket.Close()
+
+	// Command has to be closed with x00
+	command := args[0] + "\x00"
+
+	_, err = socket.Write([]byte(command))
+	if err != nil {
+		return nil, err
+	}
+	output, err := bufio.NewReader(socket).ReadBytes('\x00')
+	if err != nil {
+		return nil, err
+	}
+	// We have to remove last byte as it is delimiter x00 and it prevents from parsing JSON
+	return output[:len(output)-1], nil
 }
 
 func processBgpL2vpnEvpnSummary(ch chan<- prometheus.Metric, jsonBGPL2vpnEvpnSum []byte) error {
@@ -315,9 +331,9 @@ func collectBGP(ch chan<- prometheus.Metric, AFI string) {
 }
 
 func getBGPSummary(AFI string, SAFI string) ([]byte, error) {
-	args := []string{"-c", fmt.Sprintf("show bgp vrf all %s %s summary json", AFI, SAFI)}
+	args := []string{fmt.Sprintf("show bgp vrf all %s %s summary json", AFI, SAFI)}
 
-	return execVtyshCommand(args...)
+	return execCommand(args...)
 }
 
 func processBGPSummary(ch chan<- prometheus.Metric, jsonBGPSum []byte, AFI string, SAFI string) error {
@@ -358,7 +374,7 @@ func processBGPSummary(ch chan<- prometheus.Metric, jsonBGPSum []byte, AFI strin
 
 				if *bgpAdvertisedPrefixes {
 					wgAdvertisedPrefixes.Add(1)
-					go getPeerAdvertisedPrefixes(ch, wgAdvertisedPrefixes, AFI, SAFI, vrfName, peerIP, peerLabels...)
+					getPeerAdvertisedPrefixes(ch, wgAdvertisedPrefixes, AFI, SAFI, vrfName, peerIP, peerLabels...)
 				}
 
 				if *bgpPeerDescs {
@@ -419,15 +435,12 @@ func getPeerAdvertisedPrefixes(ch chan<- prometheus.Metric, wg *sync.WaitGroup, 
 
 	args := []string{}
 	if strings.ToLower(vrfName) == "default" {
-		args = []string{"-c", fmt.Sprintf("show bgp  %s %s neighbors %s advertised-routes json", AFI, SAFI, neighbor)}
+		args = []string{fmt.Sprintf("show bgp %s %s neighbors %s advertised-routes json", AFI, SAFI, neighbor)}
 	} else {
-		args = []string{"-c", fmt.Sprintf("show bgp vrf %s %s %s neighbors %s advertised-routes json", vrfName, AFI, SAFI, neighbor)}
+		args = []string{fmt.Sprintf("show bgp vrf %s %s %s neighbors %s advertised-routes json", vrfName, AFI, SAFI, neighbor)}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), vtyshTimeout)
-	defer cancel()
-
-	output, err := exec.CommandContext(ctx, vtyshPath, args...).Output()
+	output, err := execCommand(args...)
 	if err != nil {
 		totalErrors++
 		errors = append(errors, err)
@@ -491,14 +504,11 @@ type bgpAdvertisedRoutes struct {
 //  - Plain text description of peers
 //  - Error
 func getBGPPeerDesc() (map[string]map[string]string, map[string]string, error) {
-	args := []string{"-c", "show run bgpd"}
+	args := []string{"show run bgpd"}
 	descJSON := make(map[string]map[string]string)
 	descText := make(map[string]string)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vtyshTimeout)
-	defer cancel()
-
-	output, err := exec.CommandContext(ctx, vtyshPath, args...).Output()
+	output, err := execCommand(args...)
 	if err != nil {
 		return nil, nil, err
 	}
