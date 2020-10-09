@@ -34,6 +34,8 @@ var (
 	bgpPeerDescs          = kingpin.Flag("collector.bgp.peer-descriptions", "Add the value of the desc key from the JSON formatted BGP peer description as a label to peer metrics. (default: disabled).").Default("False").Bool()
 	bgpPeerDescsText      = kingpin.Flag("collector.bgp.peer-descriptions.plain-text", "Use the full text field of the BGP peer description instead of the value of the JSON formatted desc key (default: disabled).").Default("False").Bool()
 	bgpAdvertisedPrefixes = kingpin.Flag("collector.bgp.advertised-prefixes", "Enables the frr_exporter_bgp_prefixes_advertised_count_total metric which exports the number of advertised prefixes to a BGP peer (default: disabled).").Default("False").Bool()
+
+	socketMutex = &sync.Mutex{}
 )
 
 // BGPCollector collects BGP metrics, implemented as per prometheus.Collector interface.
@@ -179,6 +181,8 @@ func execCommand(args ...string) ([]byte, error) {
 		socketPath = "/var/run/frr/zebra.vty"
 	}
 
+	socketMutex.Lock()
+	defer socketMutex.Unlock()
 	socket, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return nil, err
@@ -374,7 +378,7 @@ func processBGPSummary(ch chan<- prometheus.Metric, jsonBGPSum []byte, AFI strin
 
 				if *bgpAdvertisedPrefixes {
 					wgAdvertisedPrefixes.Add(1)
-					getPeerAdvertisedPrefixes(ch, wgAdvertisedPrefixes, AFI, SAFI, vrfName, peerIP, peerLabels...)
+					go getPeerAdvertisedPrefixes(ch, wgAdvertisedPrefixes, AFI, SAFI, vrfName, peerIP, peerLabels...)
 				}
 
 				if *bgpPeerDescs {
